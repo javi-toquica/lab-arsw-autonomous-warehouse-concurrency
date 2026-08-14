@@ -140,8 +140,88 @@ momento, pendingCount() debe ser 0.
 
 ## 5. Critical regions and synchronization decisions
 
+| Clase | Región crítica | Invariante protegida | Mecanismo usado | ¿Por qué ese tamaño? |
+|---|---|---|---|---|
+| PackageQueue | takeNext() (revisar si está vacía, leer el primer elemento y eliminarlo) y pendingCount() | I1, I2 | Métodos synchronized | Los tres pasos dependen entre sí y deben ejecutarse como uno solo; separar la revisión de la eliminación es justo lo que causaba el IndexOutOfBoundsException. |
+| DeliveryRegistry | register() (leer/incrementar nextPosition y agregar a deliveries) y snapshot() (copiar deliveries) | I3, I4, I5 | Métodos synchronized sobre el mismo monitor | nextPosition y deliveries deben cambiar juntos como una unidad; snapshot() debe usar el mismo candado que register(), si no podría copiar la lista a mitad de un add(), que era la causa del NullPointerException. |
+| WarehouseStatistics | recordProcessed() (incrementar contador y sumar tiempo) | I5 | AtomicInteger / AtomicLong (sin locks) | Cada contador se actualiza de forma independiente, no necesitan cambiar juntos como una unidad, así que un lock sería innecesario. Los atomics evitan bloqueos y mejoran el throughput sin perder correctitud. |
+| SimulationControl | pause(), resume(), awaitIfPaused(), registerRobot(), unregisterRobot(), awaitAllPaused() | I6 | Métodos synchronized + wait()/notifyAll() | El flag paused y los contadores activeRobots/parkedRobots deben leerse y modificarse juntos para que el mecanismo de wait()/notify() funcione; si usaran candados distintos, un robot podría perder la notificación y quedar bloqueado para siempre. |
+
+
 ## 6. Thread completion and pause/resume coordination
 
+### Finalización de threads (join)
+
+WarehouseSimulation guarda todas las instancias de WarehouseRobot al crearlas.
+awaitCompletion() recorre esa lista y llama robot.join() sobre cada una.
+WarehouseMain llama start() y luego awaitCompletion() antes de imprimir el
+reporte, así que este solo se genera una vez que todos los robots terminaron,
+y se imprime exactamente una vez.
+
+Thread.sleep() no sería una alternativa válida porque solo pausa por un tiempo
+fijo, sin relación real con si los demás threads ya terminaron. Los robots
+tardan tiempos distintos según cuántos paquetes queden, así que cualquier
+tiempo fijo es solo una suposición: si es muy corto, el reporte sale
+incompleto (el error visto en la Parte I); si es muy largo, se pierde tiempo
+esperando de más. join() en cambio bloquea hasta que el thread específico
+realmente termine, sin importar cuánto tarde.
+
+### Pause / Resume
+
+SimulationControl reemplaza la espera activa por un monitor: pause(), resume()
+y awaitIfPaused() están sincronizados sobre el mismo objeto, y awaitIfPaused()
+usa wait() en vez de un ciclo. Al pausar, los robots dejan de consumir CPU y
+quedan bloqueados hasta que resume() llama notifyAll(), despertándolos a todos
+de una vez.
+
+Cada robot llama registerRobot() al iniciar y unregisterRobot() dentro de un
+finally (para que se ejecute incluso si hay una excepción), permitiendo que
+SimulationControl sepa cuántos robots siguen activos y cuántos están
+actualmente pausados.
+
+### Snapshot consistente durante la pausa
+
+awaitAllPaused() bloquea al thread principal hasta que parkedRobots sea igual
+a activeRobots, es decir, hasta que todos los robots vivos ya estén realmente
+pausados y hayan dejado de tocar el estado compartido. Solo entonces se toma
+el snapshot, garantizando que ningún robot está a mitad de una actualización
+cuando se leen los valores.
+
 ## 7. Verification results
+
+## 7. Verification results
+
+Después de aplicar la sincronización (Parte III), el join() (Parte IV) y el
+reemplazo del busy waiting por wait()/notifyAll() (Parte V), se ejecutó
+mvn clean test (BUILD SUCCESS, 2/2 tests pasados) y luego el RaceConditionProbe
+con tres configuraciones distintas, cada una con 100 corridas:
+
+| Robots | Paquetes | Runs | Anomalías antes | Anomalías después |
+|---:|---:|---:|---:|---:|
+| 8 | 100 | 100 | 30/30 (starter) | 0/100 |
+| 16 | 250 | 100 | — | 0/100 |
+| 32 | 500 | 100 | 30/30 (starter) | 0/100 |
+
+En las 300 corridas totales, cada ejecución terminó con pending=0, y con
+processedCounter, registry, uniqueParcels y uniquePositions siempre iguales
+al número de paquetes de la configuración. positionsContiguous
+se mantuvo en true en el 100% de las corridas, confirmando que las posiciones
+de entrega forman una secuencia 1..N sin huecos ni repeticiones.
+
+Comparado con el comportamiento del starter (documentado en la Parte I, donde
+la configuración de 32 robots / 500 paquetes producía 30/30 corridas con
+anomalías, incluyendo excepciones como IndexOutOfBoundsException y
+NullPointerException), el resultado confirma que las invariantes I1 a I6
+se cumplen de forma consistente y repetible, no solo en una corrida aislada.
+
+**Salida obtenida (resumen, configuración 32 robots / 500 parcels):**
+
+```text
+Run 01 -> OK | pending=0, processedCounter=500, registry=500, uniqueParcels=500, uniquePositions=500, positionsContiguous=true
+...
+Run 100 -> OK | pending=0, processedCounter=500, registry=500, uniqueParcels=500, uniquePositions=500, positionsContiguous=true
+
+Anomalous runs: 0/100
+```
 
 ## 8. Quality-attribute analysis
