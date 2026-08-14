@@ -22,10 +22,13 @@ public final class WarehouseMain {
         // Wait for all robot threads to finish before reporting, so the report
         // reflects a fully completed simulation and is consistent with the invariants.
         simulation.awaitCompletion();
-
         System.out.println("\n--- FINAL REPORT ---");
         printSnapshot(simulation.snapshot());
-        System.out.println("--------------------\n");
+        System.out.println("----------------------------------------------\n");
+
+        // The JVM stays alive because robot threads are non-daemon threads.
+        // TODO LAB 2: coordinate completion explicitly with join() and print exactly one
+        // consistent final report after all workers terminate.
     }
 
     static void printSnapshot(WarehouseSnapshot snapshot) {
