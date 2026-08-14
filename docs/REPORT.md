@@ -1,12 +1,14 @@
 # Laboratory 2 Report
 
 ## 1. Shared-state inventory
+
 | Objeto / Clase | Estado mutable compartido | Quién lee | Quién modifica                                             | Riesgo identificado                                                                                                                                                                                                                                                   |
 |---|---|---|------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | PackageQueue | La lista de paquetes pendientes (pending) | takeNext(), pendingCount() | El constructor al inicio y takeNext() cuando saca un paquete | Cuando el robot revisa si hay paquetes y cuál es el primero, y despues lo elimina de la lista. Mientras, otro robot puede meterse y eliminar ese mismo paquete, causando un error porque la lista ya cambió.                                                          |
 | DeliveryRegistry | El número de la próxima posición de entrega (nextPosition) y la lista de entregas registradas (deliveries) | register() y snapshot() | register() cada vez que un robot entrega un paquete        | Dos robots pueden calcular la misma posición de llegada al mismo tiempo, provoca posiciones repetidas o saltadas. Tambien cuando se pide una copia de la lista de entregas, otro robot puede estar agregando un nuevo registro al mismo tiempo, y eso rompe el programa |
 | WarehouseStatistics | El contador de paquetes procesados (processedParcels) y el tiempo total de procesamiento (totalProcessingMillis) | processedParcels(), totalProcessingMillis() | recordProcessed() cada vez que un robot termina un paquete | Sumar 1 al contador primero lee el valor, luego lo aumenta y luego lo guarda. Si dos robots lo hacen al mismo tiempo, uno de los aumentos se pierde y el contador final queda más bajo de lo que debería.                                                             |
 | SimulationControl | El estado de pausa (paused) | awaitIfPaused(), isPaused() | pause() y resume()                                         | La forma de pausar la simulación es ineficiente, el robot se queda en un bucle, gastando procesador en vez de que alguien lo llame                                                                                                                                    |
+
 ## 2. Observed anomalies
 
 ## Race Condition #1
@@ -111,11 +113,30 @@ PackageQueue.takeNext() — dos robots pueden tomar el mismo paquete y luego cho
 
 **Respuesta:**
 
-**Respuesta:**
-
 El resultado depende del scheduling porque el código no obliga a que un robot termine sus pasos (revisar el paquete y luego eliminarlo) antes de que otro empiece los suyos. Quién se ejecuta primero, o si dos robots quedan intercalados justo en la mitad de esos pasos, lo decide el sistema operativo, y ese orden cambia cada vez que se corre el programa. Por eso a veces la simulación funciona bien y otras veces falla con el mismo código, no es un problema de lógica, sino de que el resultado final queda a merced de un orden de ejecución que nadie controla.
 
 ## 4. System invariants
+
+I1: Un paquete, una vez tomado de la cola por un robot (takeNext()),
+no puede ser entregado a ningún otro robot.
+
+I2: La suma de (paquetes pendientes + paquetes procesados) siempre
+debe ser igual al número total de paquetes iniciales. Ningún
+paquete se pierde ni se duplica.
+
+I3: Cada posición de entrega asignada por DeliveryRegistry.register()
+debe ser única — ningún dos robots pueden recibir el mismo
+assignedPosition.
+
+I4: (Derivada de I1 + I3) Las posiciones asignadas forman una
+secuencia contigua de 1 a N, sin huecos ni repeticiones.
+
+I5: El contador processedParcels de WarehouseStatistics debe ser
+siempre igual al tamaño (size) del snapshot de DeliveryRegistry.
+
+I6: El reporte final solo puede imprimirse cuando todos los threads
+robot han terminado su ejecución (join() completado) y, en ese
+momento, pendingCount() debe ser 0.
 
 ## 5. Critical regions and synchronization decisions
 
