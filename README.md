@@ -234,15 +234,20 @@ Do not solve the exercise by blindly declaring every public method `synchronized
 
 For each change document:
 
-| Class | Critical region | Protected invariant | Synchronization mechanism | Why this granularity? |
-|---|---|---|---|---|
-|  |  |  |  |  |
-
+| Class | Critical region | Protected invariant                                  | Synchronization mechanism | Why this granularity? |
+|-|-|------------------------------------------------------|-|-|
+| PackageQueue |	takeNext(): check isEmpty() → get(0) → remove(0) | A parcel, once taken by a robot, cannot be taken by any other robot (no duplicates, no lost parcels) | synchronized on the whole method | 	The three operations depend on each other as a single logical transaction; locking only part of them would reintroduce the check-then-act race. Nothing can be left outside the lock without breaking the invariant. |
+|PackageQueue|pendingCount()| Threads see the current, up-to-date size of the queue|synchronized on the method (simple read)|Even a single read needs synchronization to guarantee memory visibility across threads; without it, a thread could see a stale value.|
+|DeliveryRegistry|register(): read nextPosition → increment → add()|Every assigned position is unique; no delivery record is lost|synchronized on the whole method, same lock as snapshot()|	Reading and incrementing nextPosition and adding the record must happen as one atomic step; using the same lock as snapshot() prevents a snapshot from reading a partially updated list.|
+|DeliveryRegistry|snapshot()|	Snapshot is not taken while a register() call is mid-execution|synchronized, same monitor as register()|Prevents ConcurrentModificationException and guarantees the snapshot reflects a fully consistent list, not a partial one.|
+|WarehouseStatistics|Increment of processedParcels and accumulation of totalProcessingMillis|The counters exactly reflect the number of processed parcels, with no lost updates|AtomicInteger.incrementAndGet() / AtomicLong.addAndGet() (no synchronized)|The two counters are independent of each other (they don't need to update as a joint transaction), so lock-free atomic primitives (CAS) avoid blocking threads unnecessarily — better throughput than a full synchronized method.|
 Answer:
 
 > What would happen to throughput if the protected region were unnecessarily large?
 
-> _Write your answer here._
+> If the protected region were unnecessarily large, the throughput of the simulation would decrease because threads would spend more time waiting for locks instead of doing actual work. For example, if process() and its Thread.sleep were inside a synchronized region, the 12 robots would no longer work in parallel and would effectively run one at a time.
+
+>Larger critical sections also increase contention and waiting time. Therefore, the critical region should only include operations that access shared state, such as the queue, registry, and counters, while independent work should remain outside the lock so the robots can work in parallel.
 
 ---
 
