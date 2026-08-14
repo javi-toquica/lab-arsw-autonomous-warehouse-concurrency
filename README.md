@@ -305,7 +305,12 @@ Explain:
 
 > How do you know the snapshot represents a consistent state rather than workers that are still changing shared data?
 
-> _Write your answer here._
+> Consistency is achieved in two ways:
+
+>Safe point: each robot calls control.awaitIfPaused() at the beginning of every while loop iteration. This means the robot only checks if it should pause after finishing the previous package. Because of this, a robot will not stop in the middle of an operation that modifies the shared state.
+Waiting for all robots to stop: calling pause() only asks the robots to pause, but they may need some time to reach the next safe point. To handle this, SimulationControl includes awaitAllPaused(). This method waits until parkedRobots is equal to activeRobots. At that point, all robots are paused and are no longer modifying packageQueue, deliveryRegistry, or statistics.
+
+>With these two mechanisms make sure that the snapshot() is taken when the shared state is not changing. This makes the snapshot consistent and avoids relying on a fixed delay such as Thread.sleep().
 
 ---
 

@@ -59,6 +59,10 @@ public final class WarehouseSimulation {
         }
     }
 
+    public void awaitAllPaused() throws InterruptedException {
+        control.awaitAllPaused();
+    }
+
     public WarehouseSnapshot snapshot() {
         return new WarehouseSnapshot(
                 parcelCount,
