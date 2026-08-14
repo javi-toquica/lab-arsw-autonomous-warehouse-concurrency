@@ -131,61 +131,111 @@ Complete the following table in your report:
 
 | Shared object | Mutable state | Readers | Writers | Possible invariant |
 |---|---|---|---|---|
-| `PackageQueue` |  |  |  |  |
-| `DeliveryRegistry` |  |  |  |  |
-| `WarehouseStatistics` |  |  |  |  |
-| `SimulationControl` |  |  |  |  |
+| PackageQueue | The pending parcels list (pending) | takeNext(), pendingCount() | The constructor at startup and takeNext() when it takes a parcel | When a robot checks whether there are parcels and which one is first, and then removes it from the list. In between, another robot can step in and remove that same parcel, causing an error because the list already changed. |
+| DeliveryRegistry | The next delivery position number (nextPosition) and the list of registered deliveries (deliveries) | register() and snapshot() | register() every time a robot delivers a parcel | Two robots can calculate the same arrival position at the same time, causing duplicated or skipped positions. Also, when a copy of the delivery list is requested, another robot may be adding a new record at the same time, which breaks the program. |
+| WarehouseStatistics | The processed parcels counter (processedParcels) and the total processing time (totalProcessingMillis) | processedParcels(), totalProcessingMillis() | recordProcessed() every time a robot finishes a parcel | Adding 1 to the counter first reads the value, then increases it, then saves it. If two robots do this at the same time, one of the increments gets lost and the final counter ends up lower than it should be. |
+| SimulationControl | The pause state (paused) | awaitIfPaused(), isPaused() | pause() and resume() | The way the simulation is paused is inefficient — the robot stays in a loop, consuming CPU, instead of being notified when it can continue. |
 
 ## 2. Evidence of incorrect behavior
-
-Record at least **three different anomalies** observed during execution.
-
-For each anomaly include:
-
-- command used;
-- execution number;
-- relevant console output;
-- class/method suspected;
-- explanation.
 
 ### Evidence 1
 
 ```text
-<your evidence>
+Command used: java -cp target/classes edu.eci.arsw.warehouse.app.WarehouseMain
+Execution number: Run 1
+
+Console output:
+Starting warehouse with 12 robots and 100 parcels...
+
+--- STARTER REPORT (intentionally premature) ---
+Initial parcels : 100
+Pending parcels : 69
+Processed count : 21
+Registry size   : 21
+Current leader  : Robot-01 / parcel 1 / position 1
+----------------------------------------------
+
+Class/method suspected: WarehouseMain / WarehouseSimulation
+
+Explanation: The final report is printed while parcels are still 
+pending (69 out of 100) and most robots have not finished yet. The 
+main thread starts all robot threads and immediately prints the 
+report without waiting for them to complete — there is no mechanism 
+forcing the main thread to wait until every robot has finished.
 ```
+
+---
 
 ### Evidence 2
 
 ```text
-<your evidence>
+Command used: java -cp target/classes edu.eci.arsw.warehouse.verification.RaceConditionProbe
+Execution number: Run 01
+
+Console output:
+Run 01 -> RACE/ANOMALY | pending=0, processedCounter=233, registry=246,
+uniqueParcels=226, uniquePositions=228, positionsContiguous=false
+
+Anomalous runs: 30/30
+
+Class/method suspected: WarehouseStatistics.recordProcessed() and 
+DeliveryRegistry.register()
+
+Explanation: At the end of the simulation, the processed counter, 
+the registry size, and the number of unique delivered parcels do not 
+match, even though they should all be equal. Incrementing the counter 
+is not a single atomic step: the program first reads the current 
+value, then increases it, then saves it. If two robots do this at 
+nearly the same time, one of the increments is lost. Something 
+similar happens with the delivery position: two robots can compute 
+the same position before either one has saved it, producing 
+duplicated or skipped positions.
 ```
+
+---
 
 ### Evidence 3
 
 ```text
-<your evidence>
-```
+Command used: java -cp target/classes edu.eci.arsw.warehouse.verification.RaceConditionProbe
+Execution number: Run 03
 
+Console output:
+[warehouse-robot-7] Queue anomaly: IndexOutOfBoundsException
+Run 03 -> RACE/ANOMALY | pending=0, processedCounter=225, registry=251,
+uniqueParcels=227, uniquePositions=215, positionsContiguous=false
+
+Class/method suspected: PackageQueue.takeNext()
+
+Explanation: Some robots throw an unexpected exception while trying 
+to take a parcel from the queue. The robot first checks which parcel 
+is available and only afterward removes it from the list, in two 
+separate steps. Between those steps, another robot can step in, take 
+the same parcel, and remove it first. When the first robot then tries 
+to remove it too, the list has already changed size and the program 
+fails.
+```
 ## 3. Interleaving analysis
 
-Choose one race condition and describe a possible interleaving.
-
-Example format:
+**Selected race condition:**
+PackageQueue.takeNext() — two robots can take the same parcel and then collide when trying to remove it from the list
 
 | Step | Thread A | Thread B | Shared state |
 |---:|---|---|---|
-| 1 |  |  |  |
-| 2 |  |  |  |
-| 3 |  |  |  |
-| 4 |  |  |  |
+| 1 | Checks whether the list is empty (it is not) | | pending has 1 parcel |
+| 2 | | Checks whether the list is empty (it is not) | pending has 1 parcel |
+| 3 | Looks at the first parcel in the list and stores it | | pending has 1 parcel |
+| 4 | | Looks at the first parcel in the list (the same one Thread A already saw) | pending has 1 parcel |
+| 5 | Removes that parcel from the list | | pending becomes empty |
+| 6 | | Tries to remove the same parcel, but the list is already empty, so the program throws an error | pending empty, IndexOutOfBoundsException error |
 
-Answer:
+### Explanation
 
 **Why is the final result dependent on scheduling?**
 
-> _Write your answer here._
+**Answer:**
 
----
+The result depends on scheduling because the code does not force one robot to fully finish its steps (checking the parcel and then removing it) before another one starts its own. Which robot runs first, or whether two robots end up interleaved right in the middle of those steps, is decided by the operating system, and that order changes every time the program runs. That is why the simulation sometimes works fine and sometimes fails with the exact same code — it is not a logic problem, but rather that the final result is left at the mercy of an execution order that no one controls.
 
 # Part II — Define the invariants
 
@@ -210,10 +260,26 @@ For each invariant state whether it is:
 Then write your final set of invariants.
 
 ```text
-I1:
-I2:
-I3:
-...
+I1: Once a parcel is taken from the queue by a robot (takeNext()),
+    it must not be delivered to any other robot.
+
+I2: The sum of (pending parcels + processed parcels) must always
+    equal the total number of initial parcels. No parcel is lost
+    or duplicated.
+
+I3: Every delivery position assigned by DeliveryRegistry.register()
+    must be unique — no two robots can receive the same
+    assignedPosition.
+
+I4: (Derived from I1 + I3) Assigned positions form a contiguous
+    sequence from 1 to N, with no gaps or repetitions.
+
+I5: The processedParcels counter in WarehouseStatistics must always
+    equal the size of the DeliveryRegistry snapshot.
+
+I6: The final report can only be printed once all robot threads
+    have finished execution (join() completed), and at that point
+    pendingCount() must be 0.
 ```
 
 ---
