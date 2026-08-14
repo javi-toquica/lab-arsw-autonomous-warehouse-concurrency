@@ -263,7 +263,8 @@ Document:
 
 > Why is `Thread.sleep(...)` not a valid substitute for `join()` when waiting for a worker to finish?
 
-> _Write your answer here._
+> Thread.sleep(n) only pauses the current thread for a fixed amount of time, without any relationship to the actual state of the worker threads. The starter assumed that 60 ms would be enough for all the robots to finish, but that is a fragile assumption: the actual execution time depends on the operating system scheduler, the machine's workload, and parameters such as the number of robots or packets. If the time is insufficient, the report is printed while some robots are still running, violating the invariant that the final report must reflect a completely finished state.
+> join(), on the other hand, does not depend on a time estimate: it blocks the calling thread until the target thread actually finishes executing its run() method, regardless of how long it takes. Additionally, join() establishes a happens-before relationship in the Java Memory Model, ensuring that all writes performed by the robot threads are visible to the coordinating thread when it takes the snapshot(). Thread.sleep() provides neither of these guarantees, so it can never correctly replace join() for synchronizing the completion of a worker thread.
 
 ---
 

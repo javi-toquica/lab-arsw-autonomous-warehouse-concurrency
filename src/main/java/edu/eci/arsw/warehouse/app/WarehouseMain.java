@@ -19,10 +19,10 @@ public final class WarehouseMain {
         System.out.printf("Starting warehouse with %d robots and %d parcels...%n", robots, parcels);
         simulation.start();
 
-        // Intentionally wrong architecture-level coordination:
-        // the application reports a "final" state before workers have finished.
-        Thread.sleep(60);
-        System.out.println("\n--- STARTER REPORT (intentionally premature) ---");
+        // Wait for all robot threads to finish before reporting, so the report
+        // reflects a fully completed simulation and is consistent with the invariants.
+        simulation.awaitCompletion();
+        System.out.println("\n--- FINAL REPORT ---");
         printSnapshot(simulation.snapshot());
         System.out.println("----------------------------------------------\n");
 
