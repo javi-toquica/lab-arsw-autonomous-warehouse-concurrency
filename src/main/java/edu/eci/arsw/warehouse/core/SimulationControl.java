@@ -29,14 +29,24 @@ public class SimulationControl {
     }
 
     public synchronized void awaitIfPaused() throws InterruptedException {
-        while (paused) {
-            parkedRobots++;
-            notifyAll();
-            try {
+        if (!paused) {
+            return;
+        }
+        // Count this robot as parked, and announce it, exactly once per pause
+        // episode. Re-incrementing/re-notifying on every loop iteration (as a
+        // previous version of this method did) causes every spurious wakeup
+        // to trigger a fresh notifyAll(), which can cascade into a storm of
+        // robots repeatedly waking each other and starve the coordinator
+        // thread waiting in awaitAllPaused() under the JVM's non-fair
+        // synchronized locks.
+        parkedRobots++;
+        notifyAll();
+        try {
+            while (paused) {
                 wait();
-            } finally {
-                parkedRobots--;
             }
+        } finally {
+            parkedRobots--;
         }
     }
 
