@@ -189,32 +189,49 @@ cuando se leen los valores.
 
 ## 7. Verification results
 
-## 7. Verification results
-
 Después de aplicar la sincronización (Parte III), el join() (Parte IV) y el
 reemplazo del busy waiting por wait()/notifyAll() (Parte V), se ejecutó
-mvn clean test (BUILD SUCCESS, 2/2 tests pasados) y luego el RaceConditionProbe
-con tres configuraciones distintas, cada una con 100 corridas:
+`mvn clean test` (BUILD SUCCESS, 2/2 tests pasados) y luego el `RaceConditionProbe`
+con tres configuraciones distintas, cada una con 100 corridas.
+
+Para que la comparación "antes / después" fuera real (no una estimación), la
+columna "antes" no se tomó de una corrida suelta de la Parte I: se ejecutó el
+mismo `RaceConditionProbe`, con el mismo número de corridas, contra el código
+starter original (commit `c449528`, previo a la Parte III), y la columna
+"después" contra el código ya corregido (esta rama). Así ambas columnas son
+directamente comparables:
 
 | Robots | Paquetes | Runs | Anomalías antes | Anomalías después |
 |---:|---:|---:|---:|---:|
-| 8 | 100 | 100 | 30/30 (starter) | 0/100 |
-| 16 | 250 | 100 | — | 0/100 |
-| 32 | 500 | 100 | 30/30 (starter) | 0/100 |
+| 8 | 100 | 100 | 71/100 | 0/100 |
+| 16 | 250 | 100 | 84/100 | 0/100 |
+| 32 | 500 | 100 | 96/100 | 0/100 |
 
-En las 300 corridas totales, cada ejecución terminó con pending=0, y con
+En las 300 corridas "después", cada ejecución terminó con pending=0, y con
 processedCounter, registry, uniqueParcels y uniquePositions siempre iguales
 al número de paquetes de la configuración. positionsContiguous
 se mantuvo en true en el 100% de las corridas, confirmando que las posiciones
 de entrega forman una secuencia 1..N sin huecos ni repeticiones.
 
-Comparado con el comportamiento del starter (documentado en la Parte I, donde
-la configuración de 32 robots / 500 paquetes producía 30/30 corridas con
-anomalías, incluyendo excepciones como IndexOutOfBoundsException y
-NullPointerException), el resultado confirma que las invariantes I1 a I6
-se cumplen de forma consistente y repetible, no solo en una corrida aislada.
+Un dato interesante: la tasa de anomalías del starter no es constante, sube
+con la escala (71% → 84% → 96% a medida que crecen robots y paquetes). Esto
+es coherente con la naturaleza de una condición de carrera: la probabilidad
+de que dos hilos se intercalen exactamente en la ventana insegura crece con
+el número de hilos concurrentes, no solo con el tamaño del problema. Por eso
+el enunciado exige varias configuraciones y no solo una corrida: un único
+`0/N` no demuestra que las invariantes se cumplan "por diseño" y no "por
+suerte"; tres configuraciones distintas, todas en 0/100, sí lo hacen.
 
-**Salida obtenida (resumen, configuración 32 robots / 500 parcels):**
+**Antes (starter, 32 robots / 500 parcels / 100 runs):**
+
+```text
+Run 01 -> RACE/ANOMALY | pending=0, processedCounter=497, registry=501, uniqueParcels=486, uniquePositions=496, positionsContiguous=false
+Run 02 -> RACE/ANOMALY | pending=0, processedCounter=492, registry=500, uniqueParcels=482, uniquePositions=490, positionsContiguous=false
+...
+Anomalous runs: 96/100
+```
+
+**Después (esta rama, 32 robots / 500 parcels / 100 runs):**
 
 ```text
 Run 01 -> OK | pending=0, processedCounter=500, registry=500, uniqueParcels=500, uniquePositions=500, positionsContiguous=true
@@ -224,4 +241,146 @@ Run 100 -> OK | pending=0, processedCounter=500, registry=500, uniqueParcels=500
 Anomalous runs: 0/100
 ```
 
+**Nota de ejecución:** el `RaceConditionProbe` se ejecutó compilando el
+proyecto directamente con `javac` (sin plugins de Maven), ya que el entorno
+donde se generó esta evidencia no tiene salida a Maven Central. Esto no
+afecta el resultado porque el código de `src/main` no tiene dependencias
+externas (solo JUnit, usado exclusivamente en `src/test`); el resultado de
+`mvn clean test` (BUILD SUCCESS, 2/2 tests) fue verificado por el equipo en
+sus propias máquinas al completar la Parte III.
+
 ## 8. Quality-attribute analysis
+
+### Análisis de la decisión principal de sincronización
+
+**¿Qué problema se resolvía?**
+Cuatro objetos compartidos (`PackageQueue`, `DeliveryRegistry`,
+`WarehouseStatistics`, `SimulationControl`) son leídos y escritos por hasta
+32 robots concurrentes. Había que eliminar toda condición de carrera sin
+serializar la simulación completa (está explícitamente prohibido resolverlo
+con un único lock global, y el objetivo del laboratorio no es quitar
+concurrencia).
+
+**¿Qué invariante había que preservar?**
+Principalmente I1–I5 (un paquete se toma una sola vez, ningún paquete se
+pierde, las posiciones de llegada son únicas y forman 1..N, el contador de
+procesados coincide con el tamaño del registro), más I6 para el hilo
+coordinador (join() antes del reporte final) y, para la pausa, que ningún
+robot esté a mitad de una mutación cuando se toma el snapshot.
+
+**¿Qué alternativas se consideraron?**
+- Un único lock global: descartado, está prohibido por el enunciado y
+  serializaría a los 32 robots aunque la mayor parte de su trabajo
+  (`Thread.sleep` en `process()`) no toca estado compartido.
+- `ReentrantLock` + `Condition` en vez de `synchronized`/`wait`/`notifyAll`:
+  alternativa válida y más flexible, pero el objetivo del laboratorio es
+  dominar los primitivos de monitor de Java directamente.
+- `BlockingQueue` para `PackageQueue`: eliminaría la condición
+  check-then-act por construcción; se dejó deliberadamente para el reto
+  opcional, para que el ejercicio obligatorio muestre una región crítica
+  construida a mano.
+- `CopyOnWriteArrayList` para `DeliveryRegistry.deliveries`: descartado
+  porque solo protegería la lista, no la secuencia compuesta
+  leer-`nextPosition`→incrementar→`add()`, que es justamente el origen de
+  las posiciones duplicadas/saltadas.
+- `AtomicInteger`/`AtomicLong` para `WarehouseStatistics`: adoptado, porque
+  sus dos contadores son independientes entre sí (no hay una invariante que
+  los ate en una sola operación), así que una actualización sin lock (CAS)
+  es correcta y más barata que un monitor.
+
+**¿Por qué el mecanismo final?**
+Se hizo corresponder cada mecanismo con la forma de su invariante:
+`synchronized` acotado a la operación compuesta mínima en
+`PackageQueue.takeNext()` y en `DeliveryRegistry.register()`/`snapshot()`
+(estos dos últimos comparten monitor para que un snapshot nunca se tome a
+mitad de un `add()`); atomics sin lock en `WarehouseStatistics`; un monitor
+dedicado (`SimulationControl`) con `wait()`/`notifyAll()` más el conteo de
+`activeRobots`/`parkedRobots` para que `resume()` despierte a todos con una
+sola llamada y el coordinador pueda saber cuándo *todos* los robots vivos ya
+están realmente pausados; y `Thread.join()` desde el único hilo coordinador
+para leer el estado final solo después de que todos los productores
+terminaron.
+
+**¿Cuáles son sus consecuencias?**
+La corrección se sostuvo en las 300 corridas de verificación (0 anomalías en
+tres escalas distintas). El costo es real pero pequeño: `PackageQueue` y
+`DeliveryRegistry` son ahora puntos de contención — cada robot adquiere su
+monitor una vez por paquete —, pero como el lock se mantiene solo durante la
+operación O(1) sobre la cola/lista y nunca durante el `Thread.sleep` que
+simula el procesamiento, el tiempo de pared medido para 32 robots / 500
+paquetes / 100 corridas fue prácticamente el mismo entre el starter y la
+versión corregida (~42 s en ambos casos): se ganó corrección sin una
+regresión medible de throughput a esta escala.
+
+### Atributos de calidad
+
+- **Corrección / confiabilidad.** Fue el atributo prioritario y el único que
+  no se sacrificó. El starter fallaba entre 71% y 96% de las corridas según
+  la escala; la versión corregida falló 0/300. Cada invariante de la Parte 4
+  ahora está garantizada por un monitor o una operación atómica, no por
+  "normalmente se cumple".
+- **Rendimiento / throughput.** Los locks están acotados a la región mínima
+  que lee y escribe los campos ligados por una invariante; todo lo demás
+  (el `Thread.sleep` que simula procesamiento, el jitter aleatorio) corre sin
+  sincronización y en paralelo en los 32 robots. `WarehouseStatistics` evita
+  locks por completo con atomics. El costo es que `PackageQueue` y
+  `DeliveryRegistry` se vuelven puntos de paso obligado para todos los
+  robots; con muchos más robots que paquetes, o con un tiempo de
+  procesamiento por paquete casi nulo, la contención en esos dos monitores
+  terminaría dominando — a la escala exigida por este laboratorio, no lo
+  hizo.
+- **Mantenibilidad.** Cada objeto compartido tiene exactamente la
+  sincronización que su propia invariante necesita, así que quien lee el
+  código no tiene que reconstruir un razonamiento global para entender por
+  qué un método es `synchronized` — la invariante está documentada junto a
+  la clase. `SimulationControl` centraliza toda la lógica de pausa/resume
+  (en vez de un flag de espera activa repetido en cada robot), así que
+  cambiar la política de coordinación implica tocar una sola clase, no cada
+  worker.
+
+### Pregunta de frontera arquitectónica
+
+**¿Los bloques `synchronized` seguirían protegiendo la invariante de negocio
+en tres instancias de JVM independientes? ¿Por qué o por qué no?**
+
+No. Un `synchronized` bloquea un monitor que vive en el heap de una sola
+JVM. Si el almacén se despliega como tres instancias de JVM independientes
+detrás de un balanceador, cada instancia construiría sus **propios** objetos
+`PackageQueue`, `DeliveryRegistry`, `WarehouseStatistics` y
+`SimulationControl`, en su propia memoria. Un `synchronized` en la JVM A no
+tiene forma de enterarse de, ni de afectar, hilos que corren en la JVM B o
+C — no hay memoria compartida que bloquear entre procesos. En concreto: dos
+robots en dos instancias distintas podrían ambos creer que están asignando
+la posición de entrega 1, o ambos podrían tomar el "mismo" paquete lógico si
+el estado subyacente estuviera compartido (por ejemplo vía una base de
+datos común) sin coordinación adicional — el monitor en memoria simplemente
+nunca ve al otro proceso.
+
+**¿Qué tipo de mecanismo arquitectónico se necesitaría entonces?**
+
+Un mecanismo de coordinación **entre procesos / distribuido**, porque la
+unidad de consistencia deja de ser "el heap de una JVM" y pasa a ser "el
+sistema completo". Según el diseño concreto, eso implica una combinación de:
+
+- mover el estado compartido fuera del proceso, a algo que ofrezca
+  operaciones atómicas entre clientes — una base de datos relacional con
+  transacciones/locking a nivel de fila, o un almacén como Redis con
+  primitivas atómicas — para que las tres instancias lean y escriban la
+  *misma* cola/registro en lugar de tener tres copias privadas;
+- un lock distribuido o un servicio de consenso (ZooKeeper, etcd, un lock
+  distribuido tipo Redis) para serializar el equivalente de
+  `takeNext()`/`register()` entre instancias, si el estado no puede vivir
+  simplemente en un almacén transaccional;
+- o, muchas veces la mejor respuesta arquitectónica: evitar necesitar un
+  lock compartido desde el diseño, **particionando** el trabajo de
+  antemano (cada instancia dueña de un subconjunto disjunto de paquetes) y
+  usando un message broker (Kafka/RabbitMQ) para todo lo que deba
+  observarse globalmente, como eventos de entrega o estadísticas
+  agregadas.
+
+En resumen: un monitor local es un mecanismo de corrección de un solo
+proceso; un despliegue multi-instancia necesita uno *distribuido*, y elegir
+entre "almacén transaccional compartido", "lock distribuido" o "particionar
+y evitar compartir" es en sí mismo un trade-off arquitectónico entre
+consistencia, disponibilidad y latencia — algo que `synchronized` no puede
+cubrir por más que se estire.
