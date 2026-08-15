@@ -25,10 +25,6 @@ public final class WarehouseMain {
         System.out.println("\n--- FINAL REPORT ---");
         printSnapshot(simulation.snapshot());
         System.out.println("----------------------------------------------\n");
-
-        // The JVM stays alive because robot threads are non-daemon threads.
-        // TODO LAB 2: coordinate completion explicitly with join() and print exactly one
-        // consistent final report after all workers terminate.
     }
 
     static void printSnapshot(WarehouseSnapshot snapshot) {
