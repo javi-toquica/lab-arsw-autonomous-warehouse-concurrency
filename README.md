@@ -407,9 +407,30 @@ Run at least three configurations:
 
 | Robots | Parcels | Runs | Anomalies before | Anomalies after |
 |---:|---:|---:|---:|---:|
-| 8 | 100 |  |  |  |
-| 16 | 250 |  |  |  |
-| 32 | 500 |  |  |  |
+| 8 | 100 | 100 | 71/100 | 0/100 |
+| 16 | 250 | 100 | 84/100 | 0/100 |
+| 32 | 500 | 100 | 96/100 | 0/100 |
+
+`mvn clean test` also passes (2/2 tests). Evidence for the "before" column was gathered by running the exact same `RaceConditionProbe` against the original starter code (commit `c449528`, before Part III), so the comparison isolates the effect of our synchronization changes and is not just "one lucky run":
+
+```text
+# before (starter), 32 robots / 500 parcels / 100 runs
+Run 01 -> RACE/ANOMALY | pending=0, processedCounter=497, registry=501,
+uniqueParcels=486, uniquePositions=496, positionsContiguous=false
+...
+Anomalous runs: 96/100
+
+# after (this branch), 32 robots / 500 parcels / 100 runs
+Run 01 -> OK           | pending=0, processedCounter=500, registry=500,
+uniqueParcels=500, uniquePositions=500, positionsContiguous=true
+...
+Anomalous runs: 0/100
+```
+
+Two things stand out from the three configurations:
+
+- **Anomalies scale with contention, not just with parcel count.** The starter's failure rate grows as robots/parcels grow (71% → 84% → 96%), because more robots means more simultaneous interleavings on the same unprotected `pending.get(0)`/`remove(0)` and `nextPosition++` steps. That is expected: race conditions are a function of *how often two threads touch the same state at nearly the same instant*, not of problem size alone.
+- **The fix generalizes.** `0/100` at all three scales (not just the smallest one) is what lets us claim the invariants I1–I6 hold *by design*, not by luck — a single `0/N` run would not be enough evidence, which is exactly why the lab statement asks for repeated runs across multiple configurations.
 
 ---
 
@@ -419,33 +440,56 @@ This laboratory is about more than Java syntax.
 
 ## 1. Decision analysis
 
-For your main synchronization decision answer:
+**What problem were you solving?**
 
-- What problem were you solving?
-- What invariant had to be preserved?
-- What alternatives did you consider?
-- Why did you choose the final mechanism?
-- What are its consequences?
+Four objects (`PackageQueue`, `DeliveryRegistry`, `WarehouseStatistics`, `SimulationControl`) are read and written by up to 32 concurrent robot threads. We needed to remove every race condition while keeping robots genuinely parallel — the constraint explicitly forbids "solving everything with one global lock" or removing concurrency altogether.
+
+**What invariant had to be preserved?**
+
+Primarily I1–I5 from Part II (a parcel is taken at most once, no parcel is lost, arrival positions are unique and form `1..N`, the processed counter matches the registry size), plus I6 for the coordinator (`join()` before the final report) and a pause-time invariant: while `paused == true`, no robot may be mid-mutation of shared state when a snapshot is taken.
+
+**What alternatives did we consider?**
+
+- **One global lock** for the whole simulation — rejected: it is explicitly disallowed and would serialize all 32 robots even though most of their work (`process()` / `Thread.sleep`) touches no shared state at all.
+- **`ReentrantLock` + `Condition`** instead of `synchronized`/`wait`/`notifyAll` — a valid alternative with finer control (multiple wait-sets), but the point of this lab is to master the monitor primitives directly, so we kept `synchronized`.
+- **`BlockingQueue`** for `PackageQueue` — would remove the check-then-act race by construction and is arguably the more idiomatic Java solution; we deliberately left it for the *optional challenge* so the required exercise still demonstrates a hand-built critical region.
+- **`CopyOnWriteArrayList`** for `DeliveryRegistry.deliveries` — rejected because it only protects the list itself, not the compound `read nextPosition → increment → add()` sequence, which is exactly where the duplicate/skipped positions came from.
+- **`AtomicInteger` / `AtomicLong`** for `WarehouseStatistics` — adopted. `processedParcels` and `totalProcessingMillis` are two *independent* counters (no invariant links them to each other in the same operation), so a lock-free CAS update is both correct and cheaper than a monitor.
+
+**Why the final mechanism?**
+
+We matched the mechanism to the shape of each invariant instead of applying one strategy everywhere:
+
+- `synchronized` scoped to the *minimum compound operation* on `PackageQueue.takeNext()` and on `DeliveryRegistry.register()`/`snapshot()` (the latter two sharing one monitor so a snapshot can never be taken mid-`add()`).
+- Lock-free atomics on `WarehouseStatistics`, since its two fields update independently.
+- A dedicated monitor (`SimulationControl`) with `wait()`/`notifyAll()` plus `activeRobots`/`parkedRobots` bookkeeping, so `resume()` can wake everyone in one call and the coordinator can detect "every live robot is actually parked" before treating a paused snapshot as consistent.
+- `Thread.join()` from the single coordinating thread to serialize the "read final state" step after every producer has terminated.
+
+**Consequences?**
+
+Correctness held across 300 verification runs (0 anomalies at 3 scales). The cost is real but small: `PackageQueue` and `DeliveryRegistry` are now contended resources — every robot must acquire their monitor once per parcel — but since the lock is held only for the O(1) queue/list operation and never across `Thread.sleep`, the measured wall-clock time for 32 robots / 500 parcels / 100 runs was effectively unchanged between the unsynchronized starter and the fixed version (~42s either way), i.e. we bought correctness without a measurable throughput regression at this scale.
 
 ## 2. Quality attributes
 
-Discuss the impact of your solution on at least:
-
-- **Correctness / reliability**
-- **Performance / throughput**
-- **Maintainability**
+- **Correctness / reliability.** This was the primary driver and the one quality attribute we did not trade off. The starter failed 71–96% of runs depending on scale; the fixed version failed 0/300. Every invariant in Part II is now enforced by a monitor or an atomic operation instead of "usually being true".
+- **Performance / throughput.** Locks are scoped to the smallest region that reads-and-writes the shared field(s) tied together by an invariant; everything else (parcel "processing" via `Thread.sleep`, the randomized jitter) runs unsynchronized and in parallel across all 32 robots. `WarehouseStatistics` avoids locks entirely via atomics. The trade-off is that `PackageQueue`/`DeliveryRegistry` become synchronization points all robots funnel through — with many more robots than parcels, or with near-zero processing time per parcel, contention on those two monitors would eventually dominate; at the scales required by this lab it did not.
+- **Maintainability.** Each shared object owns exactly the synchronization its own invariant needs, so a reader doesn't have to reconstruct global reasoning to know why a method is `synchronized` — the comment/invariant is local to the class. `SimulationControl` centralizes all pause/resume bookkeeping (instead of a busy-wait flag copy-pasted into `WarehouseRobot`), so changing the coordination policy later means touching one class, not every worker.
 
 ## 3. Architectural boundary question
 
-Assume tomorrow the warehouse is deployed as **three independent JVM instances** behind a load balancer.
-
-Answer:
-
 > Would your `synchronized` blocks still protect the business invariant across all three instances? Why or why not?
+
+No. `synchronized` locks a monitor that lives on one object, in one JVM's heap. If the warehouse runs as three independent JVM instances behind a load balancer, each instance would construct its **own** `PackageQueue`, `DeliveryRegistry`, `WarehouseStatistics` and `SimulationControl` objects in its own memory space. A `synchronized` block in JVM A has no knowledge of, and no effect on, threads running in JVM B or C — there is no shared memory to lock across process boundaries. Concretely: two robots on two different instances could both believe they are assigning delivery position 1, or both `takeNext()` the "same" logical parcel if the underlying data were somehow shared (e.g. via a common database) without additional coordination — the in-memory monitor simply never sees the other process.
 
 > What type of architectural mechanism would then be required?
 
-Do not implement a distributed solution. Analyze it.
+An **inter-process / distributed coordination mechanism**, because the unit of consistency has moved from "one JVM's heap" to "the whole system". Depending on the concrete design, that means one or a combination of:
+
+- moving the shared state itself out of process, into something that offers atomic operations across clients — a relational database with row-level locking/transactions, or a data store like Redis with atomic primitives — so all three instances read and write the *same* queue/registry instead of three private copies;
+- a distributed lock / consensus service (e.g. ZooKeeper, etcd, or a Redis-based distributed lock) to serialize the equivalent of `takeNext()`/`register()` across instances if the state cannot simply live in a transactional store;
+- or, often the better architectural answer: avoid needing a shared lock at all by **partitioning** work up front (each instance owns a disjoint shard of parcels) and using a message broker (Kafka/RabbitMQ) for anything that must be observed globally, such as delivery events or aggregate statistics.
+
+In short, a local monitor is a single-process correctness mechanism; a multi-instance deployment needs a *distributed* one, and picking between "shared transactional store", "distributed lock", or "partition and avoid sharing" is itself an architectural trade-off between consistency, availability and latency — not something `synchronized` can be stretched to cover.
 
 ---
 
