@@ -126,6 +126,16 @@ metodología de medición está en `docs/REPORT.md`, sección 7.
 
 ## Risks
 
+- Durante la verificación final se encontró que `awaitIfPaused()`
+  notificaba en cada vuelta del ciclo de espera, no solo la primera vez que
+  un robot llegaba a la pausa. Con 12 robots eso armaba una cadena de
+  notificaciones entre ellos que dejaba al hilo principal sin turno para
+  revisar si ya todos estaban pausados, y `PauseResumeDemo` se quedaba
+  colgado (reproducible en 3/3 corridas). Se corrigió para notificar una
+  sola vez por episodio de pausa; con el fix, `PauseResumeDemo` corrió
+  20/20 veces sin colgarse. Queda como advertencia general: el patrón
+  wait/notify hay que probarlo ejecutando el camino de pausa de verdad, no
+  basta con que el código "se vea" correcto.
 - Si en el futuro se agrega un nuevo campo mutable a `DeliveryRegistry` o
   `PackageQueue` sin incluirlo dentro del monitor ya existente, la
   condición de carrera reaparecería en silencio — nada en el código impide

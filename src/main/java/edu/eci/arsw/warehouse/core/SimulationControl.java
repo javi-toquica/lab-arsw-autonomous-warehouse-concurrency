@@ -32,13 +32,15 @@ public class SimulationControl {
         if (!paused) {
             return;
         }
-        // Count this robot as parked, and announce it, exactly once per pause
-        // episode. Re-incrementing/re-notifying on every loop iteration (as a
-        // previous version of this method did) causes every spurious wakeup
-        // to trigger a fresh notifyAll(), which can cascade into a storm of
-        // robots repeatedly waking each other and starve the coordinator
-        // thread waiting in awaitAllPaused() under the JVM's non-fair
-        // synchronized locks.
+        // Count this robot as parked, and notify, exactly once per pause
+        // episode. An earlier version repeated parkedRobots++ / notifyAll()
+        // on every loop iteration, so any wakeup (even one that was not
+        // caused by resume()) made this robot call notifyAll() again, which
+        // woke the other parked robots too, which each did the same thing.
+        // That chain of robots re-notifying each other could run for a long
+        // time before the coordinator thread in awaitAllPaused() got a
+        // chance to acquire the lock and check whether everyone was already
+        // paused, which is what caused PauseResumeDemo to hang.
         parkedRobots++;
         notifyAll();
         try {

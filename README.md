@@ -483,13 +483,12 @@ No. `synchronized` locks a monitor that lives on one object, in one JVM's heap. 
 
 > What type of architectural mechanism would then be required?
 
-An **inter-process / distributed coordination mechanism**, because the unit of consistency has moved from "one JVM's heap" to "the whole system". Depending on the concrete design, that means one or a combination of:
+An **inter-process / distributed coordination mechanism**, because the unit of consistency has moved from "one JVM's heap" to "the whole system". `synchronized` only protects things that live inside the same JVM's memory, so the fix has to move the coordination outside of Java's memory model entirely. Two ways to do that:
 
-- moving the shared state itself out of process, into something that offers atomic operations across clients — a relational database with row-level locking/transactions, or a data store like Redis with atomic primitives — so all three instances read and write the *same* queue/registry instead of three private copies;
-- a distributed lock / consensus service (e.g. ZooKeeper, etcd, or a Redis-based distributed lock) to serialize the equivalent of `takeNext()`/`register()` across instances if the state cannot simply live in a transactional store;
-- or, often the better architectural answer: avoid needing a shared lock at all by **partitioning** work up front (each instance owns a disjoint shard of parcels) and using a message broker (Kafka/RabbitMQ) for anything that must be observed globally, such as delivery events or aggregate statistics.
+- move the shared state itself out of each JVM and into a single external place all three instances talk to — for example one shared database, using its transactions so that two instances can never both "win" the same operation (the database itself becomes the thing that decides who goes first, the same role `synchronized` was playing before, just outside the JVM now);
+- or avoid needing a shared lock at all by **splitting the work in advance** — each instance gets its own slice of parcels from the start, so there is nothing to fight over between instances.
 
-In short, a local monitor is a single-process correctness mechanism; a multi-instance deployment needs a *distributed* one, and picking between "shared transactional store", "distributed lock", or "partition and avoid sharing" is itself an architectural trade-off between consistency, availability and latency — not something `synchronized` can be stretched to cover.
+In short: a local monitor only works because all the threads it protects share the same JVM memory. The moment there are three separate JVMs, that assumption breaks, and the shared state (or the decision of who gets to act first) has to be moved somewhere all three can see — typically a shared database.
 
 ---
 

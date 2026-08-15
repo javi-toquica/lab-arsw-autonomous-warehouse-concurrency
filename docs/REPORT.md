@@ -358,29 +358,24 @@ nunca ve al otro proceso.
 
 **¿Qué tipo de mecanismo arquitectónico se necesitaría entonces?**
 
-Un mecanismo de coordinación **entre procesos / distribuido**, porque la
-unidad de consistencia deja de ser "el heap de una JVM" y pasa a ser "el
-sistema completo". Según el diseño concreto, eso implica una combinación de:
+Un mecanismo de coordinación **entre procesos**, porque la unidad de
+consistencia deja de ser "el heap de una JVM" y pasa a ser "el sistema
+completo". `synchronized` solo protege cosas que viven en la memoria de una
+misma JVM, así que la coordinación se tiene que mover a algo que las tres
+instancias puedan ver. Dos formas de lograrlo:
 
-- mover el estado compartido fuera del proceso, a algo que ofrezca
-  operaciones atómicas entre clientes — una base de datos relacional con
-  transacciones/locking a nivel de fila, o un almacén como Redis con
-  primitivas atómicas — para que las tres instancias lean y escriban la
-  *misma* cola/registro en lugar de tener tres copias privadas;
-- un lock distribuido o un servicio de consenso (ZooKeeper, etcd, un lock
-  distribuido tipo Redis) para serializar el equivalente de
-  `takeNext()`/`register()` entre instancias, si el estado no puede vivir
-  simplemente en un almacén transaccional;
-- o, muchas veces la mejor respuesta arquitectónica: evitar necesitar un
-  lock compartido desde el diseño, **particionando** el trabajo de
-  antemano (cada instancia dueña de un subconjunto disjunto de paquetes) y
-  usando un message broker (Kafka/RabbitMQ) para todo lo que deba
-  observarse globalmente, como eventos de entrega o estadísticas
-  agregadas.
+- mover el estado compartido fuera de cada JVM, a un solo lugar externo con
+  el que hablen las tres instancias — por ejemplo una base de datos común,
+  usando sus transacciones para que dos instancias nunca puedan "ganar" la
+  misma operación al mismo tiempo (la base de datos pasa a cumplir el mismo
+  papel que cumplía `synchronized` antes, solo que ahora fuera de la JVM);
+- o evitar necesitar un lock compartido desde el diseño, **repartiendo el
+  trabajo de antemano**: cada instancia recibe su propio subconjunto de
+  paquetes desde el inicio, así que no hay nada por lo que competir entre
+  instancias.
 
-En resumen: un monitor local es un mecanismo de corrección de un solo
-proceso; un despliegue multi-instancia necesita uno *distribuido*, y elegir
-entre "almacén transaccional compartido", "lock distribuido" o "particionar
-y evitar compartir" es en sí mismo un trade-off arquitectónico entre
-consistencia, disponibilidad y latencia — algo que `synchronized` no puede
-cubrir por más que se estire.
+En resumen: un monitor local solo funciona porque todos los hilos que
+protege comparten la memoria de una misma JVM. En el momento en que hay tres
+JVMs separadas, esa suposición deja de cumplirse, y el estado compartido (o
+la decisión de quién actúa primero) se tiene que mover a un lugar que las
+tres puedan ver — típicamente una base de datos compartida.
