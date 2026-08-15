@@ -11,7 +11,7 @@ public final class PauseResumeDemo {
 
         Thread.sleep(250);
         simulation.pause();
-        Thread.sleep(100);
+        simulation.awaitAllPaused();
 
         System.out.println("\n--- PAUSED SNAPSHOT ---");
         WarehouseMain.printSnapshot(simulation.snapshot());
